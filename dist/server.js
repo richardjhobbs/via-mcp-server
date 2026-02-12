@@ -21,8 +21,8 @@ function createMcpServer() {
         name: "via-agent-demo",
         version: "0.1.0",
     });
-    // Tool 1: register_merchant (persists to Supabase)
-    server.tool("register_merchant", "Register a merchant (writes to Supabase table: merchants).", {
+    // Tool 1: Register Merchant
+    server.tool("register_merchant", "Register a merchant in the VIA network (stored in Supabase).", {
         name: z.string().min(1),
         category: z.string().min(1),
         country: z.string().min(1),
@@ -42,18 +42,18 @@ function createMcpServer() {
             content: [
                 {
                     type: "text",
-                    text: `✅ Merchant registered\n` +
+                    text: `Merchant registered\n` +
                         `Name: ${name}\n` +
                         `Category: ${category}\n` +
                         `Country: ${country}\n` +
-                        `ID: ${data?.id ?? "n/a"}\n` +
-                        `Created: ${data?.created_at ?? "n/a"}`,
+                        `ID: ${data?.id}\n` +
+                        `Created: ${data?.created_at}`,
                 },
             ],
         };
     });
-    // Tool 2: create_intent (persists to Supabase)
-    server.tool("create_intent", "Create a user intent (writes to Supabase table: intents).", {
+    // Tool 2: Create Intent
+    server.tool("create_intent", "Create a purchase intent (stored in Supabase).", {
         user_name: z.string().min(1),
         merchant_name: z.string().min(1),
         description: z.string().min(1),
@@ -74,19 +74,19 @@ function createMcpServer() {
             content: [
                 {
                     type: "text",
-                    text: `🧠 Intent recorded\n` +
+                    text: `Intent recorded\n` +
                         `User: ${user_name}\n` +
                         `Merchant: ${merchant_name}\n` +
                         `Description: ${description}\n` +
                         `Value: ${value}\n` +
-                        `ID: ${data?.id ?? "n/a"}\n` +
-                        `Created: ${data?.created_at ?? "n/a"}`,
+                        `ID: ${data?.id}\n` +
+                        `Created: ${data?.created_at}`,
                 },
             ],
         };
     });
-    // Tool 3: summary counts from Supabase
-    server.tool("via_summary", "Return counts of merchants and intents (from Supabase).", {}, async () => {
+    // Tool 3: Summary
+    server.tool("via_summary", "Return total merchants and intents stored in Supabase.", {}, async () => {
         const merchantsRes = await supabase
             .from("merchants")
             .select("id", { count: "exact", head: true });
@@ -94,15 +94,21 @@ function createMcpServer() {
             .from("intents")
             .select("id", { count: "exact", head: true });
         if (merchantsRes.error || intentsRes.error) {
-            const msg = `Merchants error: ${merchantsRes.error?.message ?? "none"}\n` +
-                `Intents error: ${intentsRes.error?.message ?? "none"}`;
-            return { content: [{ type: "text", text: msg }], isError: true };
+            return {
+                content: [
+                    {
+                        type: "text",
+                        text: `Error retrieving counts`,
+                    },
+                ],
+                isError: true,
+            };
         }
         return {
             content: [
                 {
                     type: "text",
-                    text: `VIA Summary (Supabase)\n` +
+                    text: `VIA Summary\n` +
                         `Merchants: ${merchantsRes.count ?? 0}\n` +
                         `Intents: ${intentsRes.count ?? 0}`,
                 },
@@ -113,15 +119,14 @@ function createMcpServer() {
 }
 // ---------- EXPRESS APP ----------
 const app = express();
-// CORS helps connector validation / preflight
 app.use(cors());
-// JSON body is needed for POST /mcp
-app.use(express.json({ limit: "1mb" }));
+// IMPORTANT: Use raw text, not express.json
+app.use(express.text({ type: "*/*", limit: "1mb" }));
 // Health check
 app.get("/", (_req, res) => {
     res.status(200).send("OK");
 });
-// IMPORTANT: Let the Streamable transport handle BOTH GET and POST on /mcp
+// Let Streamable HTTP handle both GET and POST
 app.all("/mcp", async (req, res) => {
     try {
         const server = createMcpServer();
@@ -129,9 +134,8 @@ app.all("/mcp", async (req, res) => {
             sessionIdGenerator: () => randomUUID(),
         });
         await server.connect(transport);
-        // Only pass a body for POST. For GET, pass undefined.
-        const body = req.method === "POST" ? req.body : undefined;
-        await transport.handleRequest(req, res, body);
+        const rawBody = typeof req.body === "string" ? req.body : "";
+        await transport.handleRequest(req, res, rawBody);
         res.on("close", () => {
             transport.close();
             server.close();
