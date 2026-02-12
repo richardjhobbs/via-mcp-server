@@ -1,4 +1,5 @@
 import "dotenv/config";
+import cors from "cors";
 import express from "express";
 import { randomUUID } from "crypto";
 import { z } from "zod";
@@ -111,6 +112,7 @@ function createMcpServer() {
 }
 // ---------- EXPRESS APP ----------
 const app = express();
+app.use(cors());
 app.use(express.json({ limit: "1mb" }));
 app.get("/", (_req, res) => {
     res.status(200).send("OK");
