@@ -1,121 +1,141 @@
-// server.ts
-import express, { Request, Response } from "express";
+import "dotenv/config";
+
+import express, { type Request, type Response } from "express";
 import { randomUUID } from "crypto";
 import { z } from "zod";
+import { createClient } from "@supabase/supabase-js";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
-type Merchant = {
-  id: string;
-  name: string;
-  category?: string;
-  country?: string;
-  created_at: string;
-};
+// ---------- ENV ----------
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
 
-type Intent = {
-  id: string;
-  user_name: string;
-  merchant_name: string;
-  description: string;
-  value: number;
-  created_at: string;
-};
+if (!SUPABASE_URL) throw new Error("Missing SUPABASE_URL");
+if (!SUPABASE_ANON_KEY) throw new Error("Missing SUPABASE_ANON_KEY");
 
-// Simple in-memory demo storage (good enough to prove “agentic” behaviour publicly)
-const merchants: Merchant[] = [];
-const intents: Intent[] = [];
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
+// ---------- MCP SERVER FACTORY ----------
 function createMcpServer() {
   const server = new McpServer({
-    name: "via-mcp-server",
+    name: "via-agent-demo",
     version: "0.1.0",
   });
 
-  // Tool 1: Register a merchant
+  // IMPORTANT: params schema is a SHAPE object, not z.object(...)
   server.tool(
     "register_merchant",
-    "Register a merchant (demo stores it in memory).",
+    "Register a merchant (persists to Supabase table: merchants).",
     {
-      name: z.string().min(1, "name is required"),
-      category: z.string().optional(),
-      country: z.string().optional(),
+      name: z.string().min(1),
+      category: z.string().min(1),
+      country: z.string().min(1),
     },
     async ({ name, category, country }) => {
-      const item: Merchant = {
-        id: randomUUID(),
-        name,
-        category,
-        country,
-        created_at: new Date().toISOString(),
-      };
+      const { data, error } = await supabase
+        .from("merchants")
+        .insert({ name, category, country })
+        .select("id, created_at")
+        .single();
 
-      merchants.unshift(item);
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: `✅ Registered merchant: ${item.name}\nID: ${item.id}\nCategory: ${item.category ?? "n/a"}\nCountry: ${item.country ?? "n/a"}`,
-          },
-        ],
-      };
-    }
-  );
-
-  // Tool 2: Create an “intent” (this is the agentic demo)
-  server.tool(
-    "create_intent",
-    "Create a user intent to buy something from a merchant (demo stores it in memory).",
-    {
-      user_name: z.string().min(1, "user_name is required"),
-      merchant_name: z.string().min(1, "merchant_name is required"),
-      description: z.string().min(1, "description is required"),
-      value: z.number().finite().nonnegative(),
-    },
-    async ({ user_name, merchant_name, description, value }) => {
-      const item: Intent = {
-        id: randomUUID(),
-        user_name,
-        merchant_name,
-        description,
-        value,
-        created_at: new Date().toISOString(),
-      };
-
-      intents.unshift(item);
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: `🧠 Intent captured\nUser: ${item.user_name}\nMerchant: ${item.merchant_name}\nWhat: ${item.description}\nValue: ${item.value}\nID: ${item.id}`,
-          },
-        ],
-      };
-    }
-  );
-
-  // Tool 3: Quick “dashboard” summary
-  server.tool(
-    "via_summary",
-    "Return a quick summary of merchants and intents captured by the server.",
-    {},
-    async () => {
-      const latestMerchant = merchants[0];
-      const latestIntent = intents[0];
+      if (error) {
+        return {
+          content: [{ type: "text", text: `Supabase error: ${error.message}` }],
+          isError: true,
+        };
+      }
 
       return {
         content: [
           {
             type: "text",
             text:
-              `VIA MCP Summary\n` +
-              `Merchants: ${merchants.length}\n` +
-              `Intents: ${intents.length}\n\n` +
-              `Latest merchant: ${latestMerchant ? latestMerchant.name : "none"}\n` +
-              `Latest intent: ${latestIntent ? `${latestIntent.user_name} -> ${latestIntent.merchant_name}` : "none"}`,
+              `✅ Merchant registered\n` +
+              `Name: ${name}\n` +
+              `Category: ${category}\n` +
+              `Country: ${country}\n` +
+              `ID: ${data?.id ?? "n/a"}\n` +
+              `Created: ${data?.created_at ?? "n/a"}`,
+          },
+        ],
+      };
+    }
+  );
+
+  server.tool(
+    "create_intent",
+    "Create a user intent (persists to Supabase table: intents).",
+    {
+      user_name: z.string().min(1),
+      merchant_name: z.string().min(1),
+      description: z.string().min(1),
+      value: z.number().finite().nonnegative(),
+    },
+    async ({ user_name, merchant_name, description, value }) => {
+      const { data, error } = await supabase
+        .from("intents")
+        .insert({ user_name, merchant_name, description, value })
+        .select("id, created_at")
+        .single();
+
+      if (error) {
+        return {
+          content: [{ type: "text", text: `Supabase error: ${error.message}` }],
+          isError: true,
+        };
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              `🧠 Intent recorded\n` +
+              `User: ${user_name}\n` +
+              `Merchant: ${merchant_name}\n` +
+              `Description: ${description}\n` +
+              `Value: ${value}\n` +
+              `ID: ${data?.id ?? "n/a"}\n` +
+              `Created: ${data?.created_at ?? "n/a"}`,
+          },
+        ],
+      };
+    }
+  );
+
+  server.tool(
+    "via_summary",
+    "Returns counts of merchants and intents in Supabase.",
+    {},
+    async () => {
+      // Count merchants
+      const merchantsRes = await supabase
+        .from("merchants")
+        .select("id", { count: "exact", head: true });
+
+      // Count intents
+      const intentsRes = await supabase
+        .from("intents")
+        .select("id", { count: "exact", head: true });
+
+      if (merchantsRes.error || intentsRes.error) {
+        const msg =
+          `Merchants error: ${merchantsRes.error?.message ?? "none"}\n` +
+          `Intents error: ${intentsRes.error?.message ?? "none"}`;
+
+        return { content: [{ type: "text", text: msg }], isError: true };
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              `VIA Summary (Supabase)\n` +
+              `Merchants: ${merchantsRes.count ?? 0}\n` +
+              `Intents: ${intentsRes.count ?? 0}`,
           },
         ],
       };
@@ -125,20 +145,27 @@ function createMcpServer() {
   return server;
 }
 
+// ---------- EXPRESS APP ----------
 const app = express();
 app.use(express.json({ limit: "1mb" }));
 
-// Health check for Render
-app.get("/", (_req, res) => {
+app.get("/", (_req: Request, res: Response) => {
+  res.status(200).send("OK");
+});
+// Helps connector UI validate the endpoint exists
+app.get("/mcp", (_req: Request, res: Response) => {
+  res.status(200).send("MCP endpoint is up. Use POST /mcp.");
+});
+
+// Helps with browser / connector preflight checks
+app.options("/mcp", (_req: Request, res: Response) => {
   res.status(200).send("ok");
 });
 
-// MCP endpoint (Streamable HTTP)
 app.post("/mcp", async (req: Request, res: Response) => {
   try {
     const server = createMcpServer();
 
-    // Stateful mode (server generates a session id)
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
     });
@@ -151,12 +178,12 @@ app.post("/mcp", async (req: Request, res: Response) => {
       server.close();
     });
   } catch (err: any) {
-    console.error("MCP /mcp error:", err);
-    res.status(500).json({ error: "Server error" });
+    console.error("MCP error:", err?.message ?? err);
+    res.status(500).json({ error: err?.message ?? "Server error" });
   }
 });
 
 const PORT = Number(process.env.PORT || 3000);
 app.listen(PORT, () => {
-  console.log(`VIA MCP Server listening on port ${PORT}`);
+  console.log(`VIA MCP server listening on port ${PORT}`);
 });
