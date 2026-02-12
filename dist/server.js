@@ -15,14 +15,13 @@ if (!SUPABASE_ANON_KEY)
     throw new Error("Missing SUPABASE_ANON_KEY");
 // ---------- SUPABASE ----------
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-// ---------- MCP SERVER FACTORY ----------
-function createMcpServer() {
+// ---------- MCP SERVER ----------
+function buildMcpServer() {
     const server = new McpServer({
         name: "via-agent-demo",
         version: "0.1.0",
     });
-    // Tool 1: Register Merchant
-    server.tool("register_merchant", "Register a merchant in the VIA network (stored in Supabase).", {
+    server.tool("register_merchant", "Register a merchant (writes to Supabase table: merchants).", {
         name: z.string().min(1),
         category: z.string().min(1),
         country: z.string().min(1),
@@ -42,18 +41,14 @@ function createMcpServer() {
             content: [
                 {
                     type: "text",
-                    text: `Merchant registered\n` +
-                        `Name: ${name}\n` +
-                        `Category: ${category}\n` +
-                        `Country: ${country}\n` +
-                        `ID: ${data?.id}\n` +
-                        `Created: ${data?.created_at}`,
+                    text: `✅ Merchant registered\n` +
+                        `Name: ${name}\nCategory: ${category}\nCountry: ${country}\n` +
+                        `ID: ${data?.id ?? "n/a"}\nCreated: ${data?.created_at ?? "n/a"}`,
                 },
             ],
         };
     });
-    // Tool 2: Create Intent
-    server.tool("create_intent", "Create a purchase intent (stored in Supabase).", {
+    server.tool("create_intent", "Create a user intent (writes to Supabase table: intents).", {
         user_name: z.string().min(1),
         merchant_name: z.string().min(1),
         description: z.string().min(1),
@@ -74,19 +69,15 @@ function createMcpServer() {
             content: [
                 {
                     type: "text",
-                    text: `Intent recorded\n` +
-                        `User: ${user_name}\n` +
-                        `Merchant: ${merchant_name}\n` +
-                        `Description: ${description}\n` +
-                        `Value: ${value}\n` +
-                        `ID: ${data?.id}\n` +
-                        `Created: ${data?.created_at}`,
+                    text: `🧠 Intent recorded\n` +
+                        `User: ${user_name}\nMerchant: ${merchant_name}\n` +
+                        `Description: ${description}\nValue: ${value}\n` +
+                        `ID: ${data?.id ?? "n/a"}\nCreated: ${data?.created_at ?? "n/a"}`,
                 },
             ],
         };
     });
-    // Tool 3: Summary
-    server.tool("via_summary", "Return total merchants and intents stored in Supabase.", {}, async () => {
+    server.tool("via_summary", "Counts from Supabase.", {}, async () => {
         const merchantsRes = await supabase
             .from("merchants")
             .select("id", { count: "exact", head: true });
@@ -98,7 +89,8 @@ function createMcpServer() {
                 content: [
                     {
                         type: "text",
-                        text: `Error retrieving counts`,
+                        text: `Merchants error: ${merchantsRes.error?.message ?? "none"}\n` +
+                            `Intents error: ${intentsRes.error?.message ?? "none"}`,
                     },
                 ],
                 isError: true,
@@ -108,45 +100,89 @@ function createMcpServer() {
             content: [
                 {
                     type: "text",
-                    text: `VIA Summary\n` +
-                        `Merchants: ${merchantsRes.count ?? 0}\n` +
-                        `Intents: ${intentsRes.count ?? 0}`,
+                    text: `VIA Summary\nMerchants: ${merchantsRes.count ?? 0}\nIntents: ${intentsRes.count ?? 0}`,
                 },
             ],
         };
     });
     return server;
 }
-// ---------- EXPRESS APP ----------
+const sessions = {};
+function getSessionId(req) {
+    const v = req.header("mcp-session-id");
+    return v && v.trim() ? v.trim() : undefined;
+}
+function isInitialize(parsedBody) {
+    if (!parsedBody)
+        return false;
+    if (Array.isArray(parsedBody)) {
+        return parsedBody.some((x) => x?.jsonrpc === "2.0" && x?.method === "initialize");
+    }
+    return parsedBody?.jsonrpc === "2.0" && parsedBody?.method === "initialize";
+}
+// ---------- EXPRESS ----------
 const app = express();
 app.use(cors());
-// IMPORTANT: Use raw text, not express.json
+// IMPORTANT: accept raw text so we control JSON parsing
 app.use(express.text({ type: "*/*", limit: "1mb" }));
-// Health check
-app.get("/", (_req, res) => {
-    res.status(200).send("OK");
-});
-// Let Streamable HTTP handle both GET and POST
-app.all("/mcp", async (req, res) => {
+app.get("/", (_req, res) => res.status(200).send("OK"));
+app.post("/mcp", async (req, res) => {
     try {
-        const server = createMcpServer();
-        const transport = new StreamableHTTPServerTransport({
-            sessionIdGenerator: () => randomUUID(),
-        });
-        await server.connect(transport);
-        const rawBody = typeof req.body === "string" ? req.body : "";
-        await transport.handleRequest(req, res, rawBody);
-        res.on("close", () => {
-            transport.close();
-            server.close();
+        const sessionId = getSessionId(req);
+        // Parse JSON ourselves
+        const raw = typeof req.body === "string" ? req.body : "";
+        let parsed;
+        try {
+            parsed = raw ? JSON.parse(raw) : undefined;
+        }
+        catch {
+            res.status(400).json({ error: "Invalid JSON body" });
+            return;
+        }
+        // Existing session: route message to the right transport
+        if (sessionId && sessions[sessionId]) {
+            await sessions[sessionId].transport.handleRequest(req, res, parsed);
+            return;
+        }
+        // New session: only allowed for initialize
+        if (!sessionId && isInitialize(parsed)) {
+            const newSessionId = randomUUID();
+            const server = buildMcpServer();
+            const transport = new StreamableHTTPServerTransport({
+                sessionIdGenerator: () => newSessionId,
+            });
+            sessions[newSessionId] = { server, transport };
+            transport.onclose = () => {
+                delete sessions[newSessionId];
+            };
+            await server.connect(transport);
+            await transport.handleRequest(req, res, parsed);
+            return;
+        }
+        res.status(400).json({
+            error: "Bad Request: missing/invalid mcp-session-id, and request was not initialize",
         });
     }
     catch (err) {
-        console.error("MCP error:", err?.message ?? err);
+        console.error("POST /mcp error:", err?.message ?? err);
         res.status(500).json({ error: err?.message ?? "Server error" });
     }
 });
-const PORT = Number(process.env.PORT || 3000);
-app.listen(PORT, () => {
-    console.log(`VIA MCP server listening on port ${PORT}`);
+app.get("/mcp", async (req, res) => {
+    const sessionId = getSessionId(req);
+    if (!sessionId || !sessions[sessionId]) {
+        res.status(400).send("Invalid or missing mcp-session-id");
+        return;
+    }
+    await sessions[sessionId].transport.handleRequest(req, res);
 });
+app.delete("/mcp", async (req, res) => {
+    const sessionId = getSessionId(req);
+    if (!sessionId || !sessions[sessionId]) {
+        res.status(400).send("Invalid or missing mcp-session-id");
+        return;
+    }
+    await sessions[sessionId].transport.handleRequest(req, res);
+});
+const PORT = Number(process.env.PORT || 3000);
+app.listen(PORT, () => console.log(`VIA MCP server listening on port ${PORT}`));
