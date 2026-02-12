@@ -1,6 +1,6 @@
 import "dotenv/config";
-import cors from "cors";
 import express from "express";
+import cors from "cors";
 import { randomUUID } from "crypto";
 import { z } from "zod";
 import { createClient } from "@supabase/supabase-js";
@@ -13,6 +13,7 @@ if (!SUPABASE_URL)
     throw new Error("Missing SUPABASE_URL");
 if (!SUPABASE_ANON_KEY)
     throw new Error("Missing SUPABASE_ANON_KEY");
+// ---------- SUPABASE ----------
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 // ---------- MCP SERVER FACTORY ----------
 function createMcpServer() {
@@ -20,8 +21,8 @@ function createMcpServer() {
         name: "via-agent-demo",
         version: "0.1.0",
     });
-    // IMPORTANT: params schema is a SHAPE object, not z.object(...)
-    server.tool("register_merchant", "Register a merchant (persists to Supabase table: merchants).", {
+    // Tool 1: register_merchant (persists to Supabase)
+    server.tool("register_merchant", "Register a merchant (writes to Supabase table: merchants).", {
         name: z.string().min(1),
         category: z.string().min(1),
         country: z.string().min(1),
@@ -51,7 +52,8 @@ function createMcpServer() {
             ],
         };
     });
-    server.tool("create_intent", "Create a user intent (persists to Supabase table: intents).", {
+    // Tool 2: create_intent (persists to Supabase)
+    server.tool("create_intent", "Create a user intent (writes to Supabase table: intents).", {
         user_name: z.string().min(1),
         merchant_name: z.string().min(1),
         description: z.string().min(1),
@@ -83,12 +85,11 @@ function createMcpServer() {
             ],
         };
     });
-    server.tool("via_summary", "Returns counts of merchants and intents in Supabase.", {}, async () => {
-        // Count merchants
+    // Tool 3: summary counts from Supabase
+    server.tool("via_summary", "Return counts of merchants and intents (from Supabase).", {}, async () => {
         const merchantsRes = await supabase
             .from("merchants")
             .select("id", { count: "exact", head: true });
-        // Count intents
         const intentsRes = await supabase
             .from("intents")
             .select("id", { count: "exact", head: true });
@@ -112,27 +113,25 @@ function createMcpServer() {
 }
 // ---------- EXPRESS APP ----------
 const app = express();
+// CORS helps connector validation / preflight
 app.use(cors());
+// JSON body is needed for POST /mcp
 app.use(express.json({ limit: "1mb" }));
+// Health check
 app.get("/", (_req, res) => {
     res.status(200).send("OK");
 });
-// Helps connector UI validate the endpoint exists
-app.get("/mcp", (_req, res) => {
-    res.status(200).send("MCP endpoint is up. Use POST /mcp.");
-});
-// Helps with browser / connector preflight checks
-app.options("/mcp", (_req, res) => {
-    res.status(200).send("ok");
-});
-app.post("/mcp", async (req, res) => {
+// IMPORTANT: Let the Streamable transport handle BOTH GET and POST on /mcp
+app.all("/mcp", async (req, res) => {
     try {
         const server = createMcpServer();
         const transport = new StreamableHTTPServerTransport({
             sessionIdGenerator: () => randomUUID(),
         });
         await server.connect(transport);
-        await transport.handleRequest(req, res, req.body);
+        // Only pass a body for POST. For GET, pass undefined.
+        const body = req.method === "POST" ? req.body : undefined;
+        await transport.handleRequest(req, res, body);
         res.on("close", () => {
             transport.close();
             server.close();
