@@ -67,35 +67,36 @@ function buildMcpServer(sessionId: string) {
   }
 
   async function logKbAccess(params: {
-    requester_type: string;
-    requester_id: string;
-    corpus: string | null;
-    doc_ids: string | null;
-    query: string | null;
-    format: string | null;
-    ok: boolean;
-    error: string | null;
-    source?: string | null;
-  }) {
-    const payload: any = {
-      requester_type: params.requester_type,
-      requester_id: params.requester_id,
-      source: params.source ?? "mcp",
-      session_id: sessionId,
-      corpus: params.corpus,
-      doc_ids: params.doc_ids,
-      query: params.query,
-      format: params.format,
-      ok: params.ok,
-      error: params.error,
-    };
+  requester_type: string;
+  requester_id: string;
+  corpus: string | null;
+  doc_ids: string | null;
+  query: string | null;
+  format: string | null;
+  ok: boolean;
+  error: string | null;
+  source?: string | null;
+}) {
+  const payload: any = {
+    requester_type: params.requester_type,
+    requester_id: params.requester_id,
+    source: params.source ?? "mcp",
+    session_id: sessionId,
+    corpus: params.corpus,
+    doc_ids: params.doc_ids,
+    query: params.query,
+    format: params.format,
+    ok: params.ok,
+    error: params.error,
+  };
 
-    try {
-      await supabase.from("kb_access_logs").insert(payload);
-    } catch {
-      // ignore logging failure
-    }
+  const { error } = await supabase.from("kb_access_logs").insert(payload);
+
+  if (error) {
+    console.error("kb_access_logs insert failed:", error.message, payload);
   }
+}
+
 
   async function enforceKbAccess(params: {
     requester_type: string;

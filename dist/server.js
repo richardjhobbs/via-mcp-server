@@ -67,11 +67,9 @@ function buildMcpServer(sessionId) {
             ok: params.ok,
             error: params.error,
         };
-        try {
-            await supabase.from("kb_access_logs").insert(payload);
-        }
-        catch {
-            // ignore logging failure
+        const { error } = await supabase.from("kb_access_logs").insert(payload);
+        if (error) {
+            console.error("kb_access_logs insert failed:", error.message, payload);
         }
     }
     async function enforceKbAccess(params) {
