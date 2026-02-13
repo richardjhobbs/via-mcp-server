@@ -5,8 +5,10 @@
   "main": "dist/server.js",
   "type": "module",
   "scripts": {
-    "build": "tsc",
-    "start": "node dist/server.js"
+  "build": "tsc server.ts kb.ts --outDir dist --target ES2022 --module NodeNext --moduleResolution NodeNext",
+  "start": "node dist/server.js"
+}
+
   },
   "keywords": [],
   "author": "Richard Hobbs",
