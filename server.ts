@@ -148,52 +148,53 @@ function buildMcpServer() {
     }
   );
 
-  server.tool(
-    "kb_get",
-    "Get a specific knowledge base document by id/path.",
-    {
-      id: z.string().min(1),
-    },
-    async ({ id }) => {
-      const doc = await kbGet(id);
-      return {
-        content: [{ type: "text", text: doc ?? "" }],
-      };
-    }
-  );
+server.tool(
+  "kb_get",
+  "Get a specific knowledge base document by id.",
+  {
+    id: z.string().min(1),
+    format: z.enum(["markdown", "text", "outline_json"]).optional(),
+  },
+  async ({ id, format }) => {
+    const doc = kbGet(id, format ?? "markdown");
+    return {
+      content: [{ type: "text", text: JSON.stringify(doc, null, 2) }],
+    };
+  }
+);
 
-  server.tool(
-    "kb_search",
-    "Search knowledge base documents for a query string.",
-    {
-      q: z.string().min(1),
-      limit: z.number().int().min(1).max(50).optional(),
-    },
-    async ({ q, limit }) => {
-      const results = await kbSearch(q, { limit: limit ?? 10 });
-      return {
-        content: [{ type: "text", text: JSON.stringify(results, null, 2) }],
-      };
-    }
-  );
 
-  server.tool(
-    "kb_render",
-    "Render a knowledge base document for humans or agents. Mode can be 'human' or 'technical'.",
-    {
-      id: z.string().min(1),
-      mode: z.enum(["human", "technical"]).default("human"),
-    },
-    async ({ id, mode }) => {
-      const rendered = await kbRender(id, mode);
-      return {
-        content: [{ type: "text", text: rendered ?? "" }],
-      };
-    }
-  );
+server.tool(
+  "kb_search",
+  "Search knowledge base documents for a query string.",
+  {
+    query: z.string().min(1),
+    corpus: z.enum(["human", "technical"]).optional(),
+  },
+  async ({ query, corpus }) => {
+    const results = kbSearch(query, corpus);
+    return {
+      content: [{ type: "text", text: JSON.stringify(results, null, 2) }],
+    };
+  }
+);
 
-  return server;
-}
+
+server.tool(
+  "kb_render",
+  "Render an answer pack from the knowledge base.",
+  {
+    query: z.string().min(1),
+    audience: z.enum(["human", "technical"]),
+  },
+  async ({ query, audience }) => {
+    const rendered = kbRender(query, audience);
+    return {
+      content: [{ type: "text", text: JSON.stringify(rendered, null, 2) }],
+    };
+  }
+);
+
 
 // ---------- SESSION STORE ----------
 type Session = {
