@@ -20,6 +20,8 @@ if (!SUPABASE_SERVICE_ROLE_KEY) throw new Error("Missing SUPABASE_SERVICE_ROLE_K
 // ---------- SUPABASE ----------
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
+// ---------- KB INIT ----------
+await kbInit();
 
 // ---------- MCP SERVER ----------
 function buildMcpServer() {
