@@ -1,0 +1,30 @@
+{
+  "corpus": "technical",
+  "version": "0.1",
+  "documents": [
+    {
+      "id": "T-OVERVIEW",
+      "title": "Technical Overview",
+      "file": "00_overview.md",
+      "tags": ["overview", "architecture"]
+    },
+    {
+      "id": "T-ARCH-STACK",
+      "title": "System Architecture Layers",
+      "file": "03_architecture_layers.md",
+      "tags": ["architecture", "layers"]
+    },
+    {
+      "id": "T-TRUST-8004",
+      "title": "Agent Trust and 8004 Framework",
+      "file": "05_trust_8004.md",
+      "tags": ["trust", "8004"]
+    },
+    {
+      "id": "T-APP-8004",
+      "title": "8004 Technical Appendix",
+      "file": "appendix_8004.md",
+      "tags": ["appendix", "8004"]
+    }
+  ]
+}

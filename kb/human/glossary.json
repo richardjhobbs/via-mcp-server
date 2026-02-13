@@ -1,0 +1,30 @@
+{
+  "version": "0.1",
+  "corpus": "human",
+  "terms": [
+    {
+      "term": "Agent",
+      "definition": "A software system capable of autonomously executing decisions within defined constraints."
+    },
+    {
+      "term": "Intent",
+      "definition": "A structured expression of an objective with constraints such as budget, time, or preferences."
+    },
+    {
+      "term": "Authorization",
+      "definition": "Delegated permission allowing an agent to act within specific limits."
+    },
+    {
+      "term": "Settlement",
+      "definition": "Final confirmation that value transfer has been completed."
+    },
+    {
+      "term": "Protocol",
+      "definition": "A standardized format for communication between systems."
+    },
+    {
+      "term": "Trust Layer",
+      "definition": "A verification system ensuring identity authenticity and scoped authorization."
+    }
+  ]
+}

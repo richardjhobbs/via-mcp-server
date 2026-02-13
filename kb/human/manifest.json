@@ -1,0 +1,24 @@
+{
+  "corpus": "human",
+  "version": "0.1",
+  "documents": [
+    {
+      "id": "H-OVERVIEW",
+      "title": "Overview",
+      "file": "00_overview.md",
+      "tags": ["overview", "agentic commerce"]
+    },
+    {
+      "id": "H-INTERNET-SHIFT",
+      "title": "The Internet Is Changing",
+      "file": "01_internet_shift.md",
+      "tags": ["history", "search", "shift"]
+    },
+    {
+      "id": "H-TRUST-8004",
+      "title": "Why Trust Matters",
+      "file": "04_trust_8004.md",
+      "tags": ["trust", "8004", "security"]
+    }
+  ]
+}

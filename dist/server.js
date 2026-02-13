@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { kbInit, kbList, kbGet, kbSearch, kbRender } from "./kb.js";
 import express from "express";
 import cors from "cors";
 import { randomUUID } from "crypto";
@@ -8,23 +9,99 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 // ---------- ENV ----------
 const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 if (!SUPABASE_URL)
     throw new Error("Missing SUPABASE_URL");
-if (!SUPABASE_ANON_KEY)
-    throw new Error("Missing SUPABASE_ANON_KEY");
+if (!SUPABASE_SERVICE_ROLE_KEY)
+    throw new Error("Missing SUPABASE_SERVICE_ROLE_KEY");
 // ---------- SUPABASE ----------
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+// ---------- KB INIT ----------
+await kbInit();
 // ---------- MCP SERVER ----------
-function buildMcpServer() {
+function buildMcpServer(sessionId) {
     const server = new McpServer({
         name: "via-agent-demo",
         version: "0.1.0",
     });
-    server.tool("register_merchant", "Register a merchant (writes to Supabase table: merchants).", {
-        name: z.string().min(1),
-        category: z.string().min(1),
-        country: z.string().min(1),
+    // ---------- KB ACCESS CONTROL + LOGGING ----------
+    async function getCorpusPolicy(corpus) {
+        const { data, error } = await supabase
+            .from("kb_corpus_policy")
+            .select("min_trust, mode")
+            .eq("corpus", corpus)
+            .maybeSingle();
+        if (error || !data) {
+            return { min_trust: 0, mode: "public" };
+        }
+        return {
+            min_trust: Number(data.min_trust ?? 0),
+            mode: (data.mode ?? "public"),
+        };
+    }
+    async function getRequesterTrust(requester_type, requester_id) {
+        const { data, error } = await supabase
+            .from("kb_requesters")
+            .select("trust_score, status")
+            .eq("requester_type", requester_type)
+            .eq("requester_id", requester_id)
+            .maybeSingle();
+        if (error || !data) {
+            return { trust_score: 0, status: "active" };
+        }
+        return {
+            trust_score: Number(data.trust_score ?? 0),
+            status: (data.status ?? "active"),
+        };
+    }
+    async function logKbAccess(params) {
+        const payload = {
+            requester_type: params.requester_type,
+            requester_id: params.requester_id,
+            source: params.source ?? "mcp",
+            session_id: sessionId,
+            corpus: params.corpus,
+            doc_ids: params.doc_ids,
+            query: params.query,
+            format: params.format,
+            ok: params.ok,
+            error: params.error,
+        };
+        try {
+            await supabase.from("kb_access_logs").insert(payload);
+        }
+        catch {
+            // ignore logging failure
+        }
+    }
+    async function enforceKbAccess(params) {
+        const policy = await getCorpusPolicy(params.corpus);
+        const requester = await getRequesterTrust(params.requester_type, params.requester_id);
+        if (requester.status === "blocked") {
+            return { ok: false, reason: "requester_blocked" };
+        }
+        if (requester.trust_score < policy.min_trust) {
+            return {
+                ok: false,
+                reason: `trust_below_threshold:${policy.min_trust}`,
+            };
+        }
+        return { ok: true, reason: "allowed" };
+    }
+    // ---------- WRITE TOOLS ----------
+    server.registerTool("register_merchant", {
+        title: "register_merchant",
+        description: "Register a merchant (writes to Supabase table: merchants).",
+        inputSchema: {
+            name: z.string().min(1),
+            category: z.string().min(1),
+            country: z.string().min(1),
+        },
+        annotations: {
+            readOnlyHint: false,
+            openWorldHint: false,
+            destructiveHint: false,
+        },
     }, async ({ name, category, country }) => {
         const { data, error } = await supabase
             .from("merchants")
@@ -48,11 +125,20 @@ function buildMcpServer() {
             ],
         };
     });
-    server.tool("create_intent", "Create a user intent (writes to Supabase table: intents).", {
-        user_name: z.string().min(1),
-        merchant_name: z.string().min(1),
-        description: z.string().min(1),
-        value: z.number().finite().nonnegative(),
+    server.registerTool("create_intent", {
+        title: "create_intent",
+        description: "Create a user intent (writes to Supabase table: intents).",
+        inputSchema: {
+            user_name: z.string().min(1),
+            merchant_name: z.string().min(1),
+            description: z.string().min(1),
+            value: z.number().finite().nonnegative(),
+        },
+        annotations: {
+            readOnlyHint: false,
+            openWorldHint: false,
+            destructiveHint: false,
+        },
     }, async ({ user_name, merchant_name, description, value }) => {
         const { data, error } = await supabase
             .from("intents")
@@ -77,7 +163,16 @@ function buildMcpServer() {
             ],
         };
     });
-    server.tool("via_summary", "Counts from Supabase.", {}, async () => {
+    // ---------- READ TOOL ----------
+    server.registerTool("via_summary", {
+        title: "via_summary",
+        description: "Counts from Supabase.",
+        inputSchema: {},
+        annotations: {
+            readOnlyHint: true,
+            openWorldHint: false,
+        },
+    }, async () => {
         const merchantsRes = await supabase
             .from("merchants")
             .select("id", { count: "exact", head: true });
@@ -105,6 +200,249 @@ function buildMcpServer() {
             ],
         };
     });
+    // ---------- KB TOOLS (READ-ONLY) ----------
+    server.registerTool("kb_list", {
+        title: "kb_list",
+        description: "List available VIA knowledge base documents.",
+        inputSchema: {
+            requester_type: z.string().min(1),
+            requester_id: z.string().min(1),
+            corpus: z.enum(["human", "technical"]).optional(),
+            limit: z.number().int().min(1).max(100).optional(),
+            offset: z.number().int().min(0).optional(),
+        },
+        annotations: {
+            readOnlyHint: true,
+            openWorldHint: false,
+        },
+    }, async ({ requester_type, requester_id, corpus, limit, offset }) => {
+        const effectiveCorpus = (corpus ?? "human");
+        const effectiveLimit = limit ?? 20;
+        const effectiveOffset = offset ?? 0;
+        const access = await enforceKbAccess({
+            requester_type,
+            requester_id,
+            corpus: effectiveCorpus,
+        });
+        if (!access.ok) {
+            await logKbAccess({
+                requester_type,
+                requester_id,
+                corpus: effectiveCorpus,
+                doc_ids: null,
+                query: null,
+                format: `list(limit=${effectiveLimit},offset=${effectiveOffset})`,
+                ok: false,
+                error: access.reason,
+            });
+            return {
+                content: [{ type: "text", text: `Access denied: ${access.reason}` }],
+                isError: true,
+            };
+        }
+        const items = kbList(effectiveCorpus, { limit: effectiveLimit, offset: effectiveOffset });
+        await logKbAccess({
+            requester_type,
+            requester_id,
+            corpus: effectiveCorpus,
+            doc_ids: null,
+            query: null,
+            format: `list(limit=${effectiveLimit},offset=${effectiveOffset})`,
+            ok: true,
+            error: null,
+        });
+        return {
+            content: [{ type: "text", text: JSON.stringify(items, null, 2) }],
+        };
+    });
+    server.registerTool("kb_get", {
+        title: "kb_get",
+        description: "Get a specific knowledge base document by id.",
+        inputSchema: {
+            requester_type: z.string().min(1),
+            requester_id: z.string().min(1),
+            id: z.string().min(1),
+            format: z.enum(["markdown", "text", "outline_json"]).optional(),
+        },
+        annotations: {
+            readOnlyHint: true,
+            openWorldHint: false,
+        },
+    }, async ({ requester_type, requester_id, id, format }) => {
+        try {
+            const meta = kbGet(id, "outline_json");
+            const inferredCorpus = (meta?.corpus ?? "human");
+            const access = await enforceKbAccess({
+                requester_type,
+                requester_id,
+                corpus: inferredCorpus,
+            });
+            if (!access.ok) {
+                await logKbAccess({
+                    requester_type,
+                    requester_id,
+                    corpus: inferredCorpus,
+                    doc_ids: id,
+                    query: null,
+                    format: format ?? null,
+                    ok: false,
+                    error: access.reason,
+                });
+                return {
+                    content: [{ type: "text", text: `Access denied: ${access.reason}` }],
+                    isError: true,
+                };
+            }
+            const doc = kbGet(id, (format ?? "markdown"));
+            await logKbAccess({
+                requester_type,
+                requester_id,
+                corpus: inferredCorpus,
+                doc_ids: id,
+                query: null,
+                format: format ?? "markdown",
+                ok: true,
+                error: null,
+            });
+            return {
+                content: [{ type: "text", text: JSON.stringify(doc, null, 2) }],
+            };
+        }
+        catch (e) {
+            await logKbAccess({
+                requester_type,
+                requester_id,
+                corpus: null,
+                doc_ids: id,
+                query: null,
+                format: format ?? null,
+                ok: false,
+                error: e?.message ?? "kb_get_error",
+            });
+            return {
+                content: [{ type: "text", text: `kb_get error: ${e?.message ?? "unknown"}` }],
+                isError: true,
+            };
+        }
+    });
+    server.registerTool("kb_search", {
+        title: "kb_search",
+        description: "Search knowledge base documents for a query string.",
+        inputSchema: {
+            requester_type: z.string().min(1),
+            requester_id: z.string().min(1),
+            query: z.string().min(1),
+            corpus: z.enum(["human", "technical"]).optional(),
+            limit: z.number().int().min(1).max(100).optional(),
+            offset: z.number().int().min(0).optional(),
+        },
+        annotations: {
+            readOnlyHint: true,
+            openWorldHint: false,
+        },
+    }, async ({ requester_type, requester_id, query, corpus, limit, offset }) => {
+        const effectiveCorpus = (corpus ?? "human");
+        const effectiveLimit = limit ?? 20;
+        const effectiveOffset = offset ?? 0;
+        const access = await enforceKbAccess({
+            requester_type,
+            requester_id,
+            corpus: effectiveCorpus,
+        });
+        if (!access.ok) {
+            await logKbAccess({
+                requester_type,
+                requester_id,
+                corpus: effectiveCorpus,
+                doc_ids: null,
+                query,
+                format: `search(limit=${effectiveLimit},offset=${effectiveOffset})`,
+                ok: false,
+                error: access.reason,
+            });
+            return {
+                content: [{ type: "text", text: `Access denied: ${access.reason}` }],
+                isError: true,
+            };
+        }
+        const results = kbSearch(query, effectiveCorpus, {
+            limit: effectiveLimit,
+            offset: effectiveOffset,
+        });
+        const docIds = Array.isArray(results?.results)
+            ? results.results
+                .map((r) => r?.id)
+                .filter(Boolean)
+                .slice(0, 50)
+                .join(",")
+            : null;
+        await logKbAccess({
+            requester_type,
+            requester_id,
+            corpus: effectiveCorpus,
+            doc_ids: docIds,
+            query,
+            format: `search(limit=${effectiveLimit},offset=${effectiveOffset})`,
+            ok: true,
+            error: null,
+        });
+        return {
+            content: [{ type: "text", text: JSON.stringify(results, null, 2) }],
+        };
+    });
+    server.registerTool("kb_render", {
+        title: "kb_render",
+        description: "Render an answer pack from the knowledge base.",
+        inputSchema: {
+            requester_type: z.string().min(1),
+            requester_id: z.string().min(1),
+            query: z.string().min(1),
+            audience: z.enum(["human", "technical"]),
+        },
+        annotations: {
+            readOnlyHint: true,
+            openWorldHint: false,
+        },
+    }, async ({ requester_type, requester_id, query, audience }) => {
+        const effectiveCorpus = audience;
+        const access = await enforceKbAccess({
+            requester_type,
+            requester_id,
+            corpus: effectiveCorpus,
+        });
+        if (!access.ok) {
+            await logKbAccess({
+                requester_type,
+                requester_id,
+                corpus: effectiveCorpus,
+                doc_ids: null,
+                query,
+                format: "render",
+                ok: false,
+                error: access.reason,
+            });
+            return {
+                content: [{ type: "text", text: `Access denied: ${access.reason}` }],
+                isError: true,
+            };
+        }
+        const rendered = kbRender(query, audience);
+        await logKbAccess({
+            requester_type,
+            requester_id,
+            corpus: effectiveCorpus,
+            doc_ids: Array.isArray(rendered?.sources)
+                ? rendered.sources.join(",")
+                : null,
+            query,
+            format: "render",
+            ok: true,
+            error: null,
+        });
+        return {
+            content: [{ type: "text", text: JSON.stringify(rendered, null, 2) }],
+        };
+    });
     return server;
 }
 const sessions = {};
@@ -123,13 +461,11 @@ function isInitialize(parsedBody) {
 // ---------- EXPRESS ----------
 const app = express();
 app.use(cors());
-// IMPORTANT: accept raw text so we control JSON parsing
 app.use(express.text({ type: "*/*", limit: "1mb" }));
 app.get("/", (_req, res) => res.status(200).send("OK"));
 app.post("/mcp", async (req, res) => {
     try {
         const sessionId = getSessionId(req);
-        // Parse JSON ourselves
         const raw = typeof req.body === "string" ? req.body : "";
         let parsed;
         try {
@@ -139,15 +475,13 @@ app.post("/mcp", async (req, res) => {
             res.status(400).json({ error: "Invalid JSON body" });
             return;
         }
-        // Existing session: route message to the right transport
         if (sessionId && sessions[sessionId]) {
             await sessions[sessionId].transport.handleRequest(req, res, parsed);
             return;
         }
-        // New session: only allowed for initialize
         if (!sessionId && isInitialize(parsed)) {
             const newSessionId = randomUUID();
-            const server = buildMcpServer();
+            const server = buildMcpServer(newSessionId);
             const transport = new StreamableHTTPServerTransport({
                 sessionIdGenerator: () => newSessionId,
             });
