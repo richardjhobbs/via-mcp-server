@@ -135,6 +135,62 @@ function buildMcpServer() {
       ],
     };
   });
+  // ---------- KB TOOLS ----------
+  server.tool(
+    "kb_list",
+    "List available VIA knowledge base documents.",
+    {},
+    async () => {
+      const items = await kbList();
+      return {
+        content: [{ type: "text", text: JSON.stringify(items, null, 2) }],
+      };
+    }
+  );
+
+  server.tool(
+    "kb_get",
+    "Get a specific knowledge base document by id/path.",
+    {
+      id: z.string().min(1),
+    },
+    async ({ id }) => {
+      const doc = await kbGet(id);
+      return {
+        content: [{ type: "text", text: doc ?? "" }],
+      };
+    }
+  );
+
+  server.tool(
+    "kb_search",
+    "Search knowledge base documents for a query string.",
+    {
+      q: z.string().min(1),
+      limit: z.number().int().min(1).max(50).optional(),
+    },
+    async ({ q, limit }) => {
+      const results = await kbSearch(q, { limit: limit ?? 10 });
+      return {
+        content: [{ type: "text", text: JSON.stringify(results, null, 2) }],
+      };
+    }
+  );
+
+  server.tool(
+    "kb_render",
+    "Render a knowledge base document for humans or agents. Mode can be 'human' or 'technical'.",
+    {
+      id: z.string().min(1),
+      mode: z.enum(["human", "technical"]).default("human"),
+    },
+    async ({ id, mode }) => {
+      const rendered = await kbRender(id, mode);
+      return {
+        content: [{ type: "text", text: rendered ?? "" }],
+      };
+    }
+  );
 
   return server;
 }
