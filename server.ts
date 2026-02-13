@@ -125,6 +125,45 @@ function buildMcpServer() {
         isError: true,
       };
     }
+  server.tool(
+    "kb_list",
+    "List available VIA knowledge base documents.",
+    { corpus: z.enum(["human", "technical"]).optional() },
+    async ({ corpus }) => {
+      const items = kbList(corpus);
+      return { content: [{ type: "text", text: JSON.stringify(items, null, 2) }] };
+    }
+  );
+
+  server.tool(
+    "kb_get",
+    "Get a specific knowledge base document by id.",
+    { id: z.string().min(1), format: z.enum(["markdown", "text", "outline_json"]).optional() },
+    async ({ id, format }) => {
+      const doc = kbGet(id, (format ?? "markdown") as any);
+      return { content: [{ type: "text", text: JSON.stringify(doc, null, 2) }] };
+    }
+  );
+
+  server.tool(
+    "kb_search",
+    "Search knowledge base documents for a query string.",
+    { query: z.string().min(1), corpus: z.enum(["human", "technical"]).optional() },
+    async ({ query, corpus }) => {
+      const results = kbSearch(query, corpus);
+      return { content: [{ type: "text", text: JSON.stringify(results, null, 2) }] };
+    }
+  );
+
+  server.tool(
+    "kb_render",
+    "Render an answer pack from the knowledge base.",
+    { query: z.string().min(1), audience: z.enum(["human", "technical"]) },
+    async ({ query, audience }) => {
+      const rendered = kbRender(query, audience);
+      return { content: [{ type: "text", text: JSON.stringify(rendered, null, 2) }] };
+    }
+  );
 
     return {
       content: [
