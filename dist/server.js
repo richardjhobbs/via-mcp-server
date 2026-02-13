@@ -22,9 +22,9 @@ await kbInit();
 function buildMcpServer(sessionId) {
     const server = new McpServer({
         name: "via-agent-demo",
-        version: "0.1.0",
+        version: "0.2.0",
     });
-    // ---------- KB ACCESS CONTROL + LOGGING ----------
+    // ---------- KB POLICY + REQUESTER TRUST ----------
     async function getCorpusPolicy(corpus) {
         const { data, error } = await supabase
             .from("kb_corpus_policy")
@@ -54,6 +54,18 @@ function buildMcpServer(sessionId) {
             status: (data.status ?? "active"),
         };
     }
+    async function enforceKbAccess(params) {
+        const policy = await getCorpusPolicy(params.corpus);
+        const requester = await getRequesterTrust(params.requester_type, params.requester_id);
+        if (requester.status === "blocked") {
+            return { ok: false, reason: "requester_blocked" };
+        }
+        if (requester.trust_score < policy.min_trust) {
+            return { ok: false, reason: `trust_below_threshold:${policy.min_trust}` };
+        }
+        return { ok: true, reason: "allowed" };
+    }
+    // ---------- LOGGING ----------
     async function logKbAccess(params) {
         const payload = {
             requester_type: params.requester_type,
@@ -61,7 +73,7 @@ function buildMcpServer(sessionId) {
             source: params.source ?? "mcp",
             session_id: sessionId,
             corpus: params.corpus,
-            doc_ids: params.doc_ids,
+            doc_ids: params.doc_ids, // IMPORTANT: array or null
             query: params.query,
             format: params.format,
             ok: params.ok,
@@ -71,20 +83,6 @@ function buildMcpServer(sessionId) {
         if (error) {
             console.error("kb_access_logs insert failed:", error.message, payload);
         }
-    }
-    async function enforceKbAccess(params) {
-        const policy = await getCorpusPolicy(params.corpus);
-        const requester = await getRequesterTrust(params.requester_type, params.requester_id);
-        if (requester.status === "blocked") {
-            return { ok: false, reason: "requester_blocked" };
-        }
-        if (requester.trust_score < policy.min_trust) {
-            return {
-                ok: false,
-                reason: `trust_below_threshold:${policy.min_trust}`,
-            };
-        }
-        return { ok: true, reason: "allowed" };
     }
     // ---------- WRITE TOOLS ----------
     server.registerTool("register_merchant", {
@@ -98,7 +96,7 @@ function buildMcpServer(sessionId) {
         annotations: {
             readOnlyHint: false,
             openWorldHint: false,
-            destructiveHint: false,
+            destructiveHint: true, // write tool
         },
     }, async ({ name, category, country }) => {
         const { data, error } = await supabase
@@ -135,7 +133,7 @@ function buildMcpServer(sessionId) {
         annotations: {
             readOnlyHint: false,
             openWorldHint: false,
-            destructiveHint: false,
+            destructiveHint: true, // write tool
         },
     }, async ({ user_name, merchant_name, description, value }) => {
         const { data, error } = await supabase
@@ -280,7 +278,7 @@ function buildMcpServer(sessionId) {
                     requester_type,
                     requester_id,
                     corpus: inferredCorpus,
-                    doc_ids: id,
+                    doc_ids: [id], // FIX: array
                     query: null,
                     format: format ?? null,
                     ok: false,
@@ -296,7 +294,7 @@ function buildMcpServer(sessionId) {
                 requester_type,
                 requester_id,
                 corpus: inferredCorpus,
-                doc_ids: id,
+                doc_ids: [id], // FIX: array
                 query: null,
                 format: format ?? "markdown",
                 ok: true,
@@ -311,7 +309,7 @@ function buildMcpServer(sessionId) {
                 requester_type,
                 requester_id,
                 corpus: null,
-                doc_ids: id,
+                doc_ids: [id], // FIX: array even on error
                 query: null,
                 format: format ?? null,
                 ok: false,
@@ -368,17 +366,13 @@ function buildMcpServer(sessionId) {
             offset: effectiveOffset,
         });
         const docIds = Array.isArray(results?.results)
-            ? results.results
-                .map((r) => r?.id)
-                .filter(Boolean)
-                .slice(0, 50)
-                .join(",")
-            : null;
+            ? results.results.map((r) => r?.id).filter(Boolean).slice(0, 50)
+            : [];
         await logKbAccess({
             requester_type,
             requester_id,
             corpus: effectiveCorpus,
-            doc_ids: docIds,
+            doc_ids: docIds.length ? docIds : null, // FIX: array or null
             query,
             format: `search(limit=${effectiveLimit},offset=${effectiveOffset})`,
             ok: true,
@@ -425,13 +419,12 @@ function buildMcpServer(sessionId) {
             };
         }
         const rendered = kbRender(query, audience);
+        const sources = Array.isArray(rendered?.sources) ? rendered.sources : [];
         await logKbAccess({
             requester_type,
             requester_id,
             corpus: effectiveCorpus,
-            doc_ids: Array.isArray(rendered?.sources)
-                ? rendered.sources.join(",")
-                : null,
+            doc_ids: sources.length ? sources : null, // FIX: array or null
             query,
             format: "render",
             ok: true,

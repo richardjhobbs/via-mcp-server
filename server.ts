@@ -27,10 +27,10 @@ await kbInit();
 function buildMcpServer(sessionId: string) {
   const server = new McpServer({
     name: "via-agent-demo",
-    version: "0.1.0",
+    version: "0.2.0",
   });
 
-  // ---------- KB ACCESS CONTROL + LOGGING ----------
+  // ---------- KB POLICY + REQUESTER TRUST ----------
   async function getCorpusPolicy(corpus: "human" | "technical") {
     const { data, error } = await supabase
       .from("kb_corpus_policy")
@@ -66,38 +66,6 @@ function buildMcpServer(sessionId: string) {
     };
   }
 
-  async function logKbAccess(params: {
-  requester_type: string;
-  requester_id: string;
-  corpus: string | null;
-  doc_ids: string | null;
-  query: string | null;
-  format: string | null;
-  ok: boolean;
-  error: string | null;
-  source?: string | null;
-}) {
-  const payload: any = {
-    requester_type: params.requester_type,
-    requester_id: params.requester_id,
-    source: params.source ?? "mcp",
-    session_id: sessionId,
-    corpus: params.corpus,
-    doc_ids: params.doc_ids,
-    query: params.query,
-    format: params.format,
-    ok: params.ok,
-    error: params.error,
-  };
-
-  const { error } = await supabase.from("kb_access_logs").insert(payload);
-
-  if (error) {
-    console.error("kb_access_logs insert failed:", error.message, payload);
-  }
-}
-
-
   async function enforceKbAccess(params: {
     requester_type: string;
     requester_id: string;
@@ -111,13 +79,41 @@ function buildMcpServer(sessionId: string) {
     }
 
     if (requester.trust_score < policy.min_trust) {
-      return {
-        ok: false as const,
-        reason: `trust_below_threshold:${policy.min_trust}`,
-      };
+      return { ok: false as const, reason: `trust_below_threshold:${policy.min_trust}` };
     }
 
     return { ok: true as const, reason: "allowed" };
+  }
+
+  // ---------- LOGGING ----------
+  async function logKbAccess(params: {
+    requester_type: string;
+    requester_id: string;
+    corpus: string | null;
+    doc_ids: string[] | null; // IMPORTANT: matches Postgres text[]
+    query: string | null;
+    format: string | null;
+    ok: boolean;
+    error: string | null;
+    source?: string | null;
+  }) {
+    const payload: any = {
+      requester_type: params.requester_type,
+      requester_id: params.requester_id,
+      source: params.source ?? "mcp",
+      session_id: sessionId,
+      corpus: params.corpus,
+      doc_ids: params.doc_ids, // IMPORTANT: array or null
+      query: params.query,
+      format: params.format,
+      ok: params.ok,
+      error: params.error,
+    };
+
+    const { error } = await supabase.from("kb_access_logs").insert(payload);
+    if (error) {
+      console.error("kb_access_logs insert failed:", error.message, payload);
+    }
   }
 
   // ---------- WRITE TOOLS ----------
@@ -134,7 +130,7 @@ function buildMcpServer(sessionId: string) {
       annotations: {
         readOnlyHint: false,
         openWorldHint: false,
-        destructiveHint: false,
+        destructiveHint: true, // write tool
       },
     },
     async ({ name, category, country }) => {
@@ -179,7 +175,7 @@ function buildMcpServer(sessionId: string) {
       annotations: {
         readOnlyHint: false,
         openWorldHint: false,
-        destructiveHint: false,
+        destructiveHint: true, // write tool
       },
     },
     async ({ user_name, merchant_name, description, value }) => {
@@ -355,7 +351,7 @@ function buildMcpServer(sessionId: string) {
             requester_type,
             requester_id,
             corpus: inferredCorpus,
-            doc_ids: id,
+            doc_ids: [id], // FIX: array
             query: null,
             format: format ?? null,
             ok: false,
@@ -374,7 +370,7 @@ function buildMcpServer(sessionId: string) {
           requester_type,
           requester_id,
           corpus: inferredCorpus,
-          doc_ids: id,
+          doc_ids: [id], // FIX: array
           query: null,
           format: format ?? "markdown",
           ok: true,
@@ -389,7 +385,7 @@ function buildMcpServer(sessionId: string) {
           requester_type,
           requester_id,
           corpus: null,
-          doc_ids: id,
+          doc_ids: [id], // FIX: array even on error
           query: null,
           format: format ?? null,
           ok: false,
@@ -458,18 +454,14 @@ function buildMcpServer(sessionId: string) {
 
       const docIds =
         Array.isArray((results as any)?.results)
-          ? (results as any).results
-              .map((r: any) => r?.id)
-              .filter(Boolean)
-              .slice(0, 50)
-              .join(",")
-          : null;
+          ? (results as any).results.map((r: any) => r?.id).filter(Boolean).slice(0, 50)
+          : [];
 
       await logKbAccess({
         requester_type,
         requester_id,
         corpus: effectiveCorpus,
-        doc_ids: docIds,
+        doc_ids: docIds.length ? docIds : null, // FIX: array or null
         query,
         format: `search(limit=${effectiveLimit},offset=${effectiveOffset})`,
         ok: true,
@@ -527,13 +519,14 @@ function buildMcpServer(sessionId: string) {
 
       const rendered = kbRender(query, audience);
 
+      const sources =
+        Array.isArray((rendered as any)?.sources) ? ((rendered as any).sources as string[]) : [];
+
       await logKbAccess({
         requester_type,
         requester_id,
         corpus: effectiveCorpus,
-        doc_ids: Array.isArray((rendered as any)?.sources)
-          ? (rendered as any).sources.join(",")
-          : null,
+        doc_ids: sources.length ? sources : null, // FIX: array or null
         query,
         format: "render",
         ok: true,
