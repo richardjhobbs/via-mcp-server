@@ -19,6 +19,12 @@
       "title": "Why Trust Matters",
       "file": "04_trust_8004.md",
       "tags": ["trust", "8004", "security"]
+    },
+    {
+      "id": "H-TECH-FOUNDATIONS",
+      "title": "Technical Foundations of VIA",
+      "file": "tech-foundations.md",
+      "tags": ["mcp", "agents", "nostr", "x402", "trust", "8004"]
     }
   ]
 }
