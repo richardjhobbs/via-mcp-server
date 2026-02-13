@@ -108,6 +108,7 @@ function buildMcpServer() {
     const merchantsRes = await supabase
       .from("merchants")
       .select("id", { count: "exact", head: true });
+
     const intentsRes = await supabase
       .from("intents")
       .select("id", { count: "exact", head: true });
@@ -125,45 +126,6 @@ function buildMcpServer() {
         isError: true,
       };
     }
-  server.tool(
-    "kb_list",
-    "List available VIA knowledge base documents.",
-    { corpus: z.enum(["human", "technical"]).optional() },
-    async ({ corpus }) => {
-      const items = kbList(corpus);
-      return { content: [{ type: "text", text: JSON.stringify(items, null, 2) }] };
-    }
-  );
-
-  server.tool(
-    "kb_get",
-    "Get a specific knowledge base document by id.",
-    { id: z.string().min(1), format: z.enum(["markdown", "text", "outline_json"]).optional() },
-    async ({ id, format }) => {
-      const doc = kbGet(id, (format ?? "markdown") as any);
-      return { content: [{ type: "text", text: JSON.stringify(doc, null, 2) }] };
-    }
-  );
-
-  server.tool(
-    "kb_search",
-    "Search knowledge base documents for a query string.",
-    { query: z.string().min(1), corpus: z.enum(["human", "technical"]).optional() },
-    async ({ query, corpus }) => {
-      const results = kbSearch(query, corpus);
-      return { content: [{ type: "text", text: JSON.stringify(results, null, 2) }] };
-    }
-  );
-
-  server.tool(
-    "kb_render",
-    "Render an answer pack from the knowledge base.",
-    { query: z.string().min(1), audience: z.enum(["human", "technical"]) },
-    async ({ query, audience }) => {
-      const rendered = kbRender(query, audience);
-      return { content: [{ type: "text", text: JSON.stringify(rendered, null, 2) }] };
-    }
-  );
 
     return {
       content: [
@@ -174,66 +136,58 @@ function buildMcpServer() {
       ],
     };
   });
+
   // ---------- KB TOOLS ----------
   server.tool(
     "kb_list",
     "List available VIA knowledge base documents.",
-    {},
-    async () => {
-      const items = await kbList();
+    { corpus: z.enum(["human", "technical"]).optional() },
+    async ({ corpus }) => {
+      const items = kbList(corpus);
       return {
         content: [{ type: "text", text: JSON.stringify(items, null, 2) }],
       };
     }
   );
 
-server.tool(
-  "kb_get",
-  "Get a specific knowledge base document by id.",
-  {
-    id: z.string().min(1),
-    format: z.enum(["markdown", "text", "outline_json"]).optional(),
-  },
-  async ({ id, format }) => {
-    const doc = kbGet(id, format ?? "markdown");
-    return {
-      content: [{ type: "text", text: JSON.stringify(doc, null, 2) }],
-    };
-  }
-);
+  server.tool(
+    "kb_get",
+    "Get a specific knowledge base document by id.",
+    { id: z.string().min(1), format: z.enum(["markdown", "text", "outline_json"]).optional() },
+    async ({ id, format }) => {
+      const doc = kbGet(id, (format ?? "markdown") as any);
+      return {
+        content: [{ type: "text", text: JSON.stringify(doc, null, 2) }],
+      };
+    }
+  );
 
+  server.tool(
+    "kb_search",
+    "Search knowledge base documents for a query string.",
+    { query: z.string().min(1), corpus: z.enum(["human", "technical"]).optional() },
+    async ({ query, corpus }) => {
+      const results = kbSearch(query, corpus);
+      return {
+        content: [{ type: "text", text: JSON.stringify(results, null, 2) }],
+      };
+    }
+  );
 
-server.tool(
-  "kb_search",
-  "Search knowledge base documents for a query string.",
-  {
-    query: z.string().min(1),
-    corpus: z.enum(["human", "technical"]).optional(),
-  },
-  async ({ query, corpus }) => {
-    const results = kbSearch(query, corpus);
-    return {
-      content: [{ type: "text", text: JSON.stringify(results, null, 2) }],
-    };
-  }
-);
+  server.tool(
+    "kb_render",
+    "Render an answer pack from the knowledge base.",
+    { query: z.string().min(1), audience: z.enum(["human", "technical"]) },
+    async ({ query, audience }) => {
+      const rendered = kbRender(query, audience);
+      return {
+        content: [{ type: "text", text: JSON.stringify(rendered, null, 2) }],
+      };
+    }
+  );
 
-
-server.tool(
-  "kb_render",
-  "Render an answer pack from the knowledge base.",
-  {
-    query: z.string().min(1),
-    audience: z.enum(["human", "technical"]),
-  },
-  async ({ query, audience }) => {
-    const rendered = kbRender(query, audience);
-    return {
-      content: [{ type: "text", text: JSON.stringify(rendered, null, 2) }],
-    };
-  }
-);
-
+  return server;
+}
 
 // ---------- SESSION STORE ----------
 type Session = {
@@ -259,8 +213,6 @@ function isInitialize(parsedBody: any): boolean {
 // ---------- EXPRESS ----------
 const app = express();
 app.use(cors());
-
-// IMPORTANT: accept raw text so we control JSON parsing
 app.use(express.text({ type: "*/*", limit: "1mb" }));
 
 app.get("/", (_req, res) => res.status(200).send("OK"));
@@ -269,7 +221,6 @@ app.post("/mcp", async (req: Request, res: Response) => {
   try {
     const sessionId = getSessionId(req);
 
-    // Parse JSON ourselves
     const raw = typeof req.body === "string" ? req.body : "";
     let parsed: any;
     try {
@@ -279,16 +230,13 @@ app.post("/mcp", async (req: Request, res: Response) => {
       return;
     }
 
-    // Existing session: route message to the right transport
     if (sessionId && sessions[sessionId]) {
       await sessions[sessionId].transport.handleRequest(req, res, parsed);
       return;
     }
 
-    // New session: only allowed for initialize
     if (!sessionId && isInitialize(parsed)) {
       const newSessionId = randomUUID();
-
       const server = buildMcpServer();
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => newSessionId,
